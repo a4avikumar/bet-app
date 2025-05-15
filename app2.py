@@ -181,7 +181,7 @@ def home():
         <h1>Upload your DOCX file to generate match images</h1>
         <form action="/upload" method="POST" enctype="multipart/form-data">
             <input type="file" name="docx_file" required>
-            <input type="submit" value="Upload">
+            <input type="submit" value="Upload_and_wait">
         </form>
         </body></html>
     """)
