@@ -11,8 +11,8 @@ import docx
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'generated_images'
+UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'uploads')
+OUTPUT_FOLDER = os.path.join(tempfile.gettempdir(), 'generated_images')
 ALLOWED_EXTENSIONS = {'docx'}
 TEMPLATE_IMAGE_PATH = '3.jpeg'  # Replace with your template path
 FONTS = {
