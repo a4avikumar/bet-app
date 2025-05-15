@@ -1,27 +1,29 @@
 import os
-import zipfile
-from flask import Flask, request, send_from_directory, render_template_string
+from flask import Flask, request, render_template_string
 from PIL import Image, ImageDraw, ImageFont
 import docx
-import json
+import cloudinary
+import cloudinary.uploader
 import uuid
 
 app = Flask(__name__)
 
-# Updated writable paths
 UPLOAD_FOLDER = '/tmp/uploads'
-OUTPUT_FOLDER = '/tmp/generated_images'
-
-# Ensure folders exist
+TEMPLATE_IMAGE_PATH = '3.jpeg'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Function to extract matches from DOCX
+# Configure Cloudinary
+cloudinary.config(
+    cloud_name="dyku0f083",
+    api_key='689469863154634',
+    api_secret='5oVW4WKCh7sTlJfqAlaYnObYtpY'
+)
+
+# Extract matches from DOCX
 def extract_matches_from_docx(doc_path):
     doc = docx.Document(doc_path)
     match_data = []
     current_match = ""
-
     for para in doc.paragraphs:
         para_text = para.text.strip()
         if para_text.startswith("Date"):
@@ -30,19 +32,16 @@ def extract_matches_from_docx(doc_path):
             current_match = para_text
         else:
             current_match += "\n" + para_text
-
     if current_match:
         match_data.append(current_match.strip())
-
     return match_data
 
-# Function to parse match data
+# Parse structured match data
 def parse_match_data(text):
     lines = text.strip().split('\n')
     matches, current_stats = [], {}
     current_match, current_heading, stat_lines = None, None, []
     line_index = 0
-
     while line_index < len(lines):
         line = lines[line_index].strip()
         if not line or line.startswith('====='):
@@ -90,7 +89,7 @@ def parse_match_data(text):
 
     return matches
 
-# Wrap long text to fit image
+# Wrap long text
 def wrap_text(text, font, max_width, draw):
     lines = []
     words = text.split()
@@ -108,16 +107,14 @@ def wrap_text(text, font, max_width, draw):
         lines.append(current_line)
     return lines
 
-# Draw text on image
-def add_text_to_template(stat_text, match_name, stat_title, template_image_path, output_image_path):
+# Draw text and upload to Cloudinary
+def add_text_to_template(stat_text, match_name, stat_title, template_image_path):
     img = Image.open(template_image_path)
     draw = ImageDraw.Draw(img)
 
     title_font = ImageFont.truetype("CalSans-Regular.ttf", 100)
     heading_font = ImageFont.truetype("BebasNeue-Regular.ttf", 100)
-    body_font_1 = ImageFont.truetype("BebasNeue-Regular.ttf", 80)
-    body_font_2 = ImageFont.truetype("BebasNeue-Regular.ttf", 80)
-    body_font_3 = ImageFont.truetype("BebasNeue-Regular.ttf", 80)
+    body_font = ImageFont.truetype("BebasNeue-Regular.ttf", 80)
 
     max_width = 1200
     title_position = (600, 150)
@@ -138,74 +135,58 @@ def add_text_to_template(stat_text, match_name, stat_title, template_image_path,
     draw.text(heading_position, stat_title, font=heading_font, fill=(255, 215, 0))
 
     lines = stat_text.split('\n')
-    default_line_height = 65
-    wrapped_line_height = 70
     y_position = text_position[1]
 
     for i, line in enumerate(lines):
-        if i == 0:
-            font = body_font_1
-            text_color = "white"
-        elif i == 1:
-            font = body_font_2
-            text_color = "lightgreen"
-        else:
-            font = body_font_3
-            text_color = "yellow"
+        font = body_font
+        text_color = "white" if i == 0 else "lightgreen" if i == 1 else "yellow"
+        wrapped_lines = wrap_text(line, font, max_width, draw)
 
-        wrapped_text = wrap_text(line, font, max_width, draw)
+        for wrapped_line in wrapped_lines:
+            text_width, _ = draw.textbbox((0, 0), wrapped_line, font=font)[2:4]
+            x_position = (img.width - text_width) // 2
+            draw.text((x_position + shadow_offset, y_position + shadow_offset), wrapped_line, font=font, fill=(0, 0, 0))
+            draw.text((x_position, y_position), wrapped_line, font=font, fill=text_color)
+            y_position += 70
 
-        for wrapped_line in wrapped_text:
-            text_width, text_height = draw.textbbox((0, 0), wrapped_line, font=font)[2:4]
-            wrapped_line_position = ((img.width - text_width) // 2, y_position)
+        y_position += 65
 
-            draw.text((wrapped_line_position[0] + shadow_offset, wrapped_line_position[1] + shadow_offset), wrapped_line, font=font, fill=(0, 0, 0))
-            draw.text(wrapped_line_position, wrapped_line, font=font, fill=text_color)
-            y_position += wrapped_line_height
+    tmp_image_path = f"/tmp/{uuid.uuid4()}.png"
+    img.save(tmp_image_path)
 
-        y_position += default_line_height
+    # Upload to Cloudinary
+    upload_result = cloudinary.uploader.upload(tmp_image_path)
+    os.remove(tmp_image_path)
+    return upload_result['secure_url']
 
-    img.save(output_image_path)
-    print(f"Image saved as: {output_image_path}")
+# Process matches and return image URLs
+def generate_images_and_upload(matches_data):
+    cloudinary_urls = []
 
-# ZIP all images
-def create_zip_from_images(output_folder, zip_filename):
-    zip_file_path = f"{output_folder}/{zip_filename}.zip"
-    with zipfile.ZipFile(zip_file_path, 'w') as zipf:
-        for foldername, subfolders, filenames in os.walk(output_folder):
-            for filename in filenames:
-                file_path = os.path.join(foldername, filename)
-                zipf.write(file_path, os.path.relpath(file_path, output_folder))
-    return zip_file_path
-
-# Generate images for all matches
-def generate_images_for_stats_with_template(matches_data, template_image_path, output_folder):
     for match in matches_data:
-        match_date = match['Date']
         match_name = match['Match']
         stats = match['Stats']
 
-        match_folder = f"{output_folder}/{match_date}_{match_name.replace(' ', '_').replace('/', '_')}"
-        os.makedirs(match_folder, exist_ok=True)
-
         for stat_title, stat_text in stats.items():
-            image_output_path = f"{match_folder}/{stat_title.replace(' ', '_')}.png"
-            add_text_to_template(stat_text, match_name, stat_title, template_image_path, image_output_path)
+            url = add_text_to_template(stat_text, match_name, stat_title, TEMPLATE_IMAGE_PATH)
+            cloudinary_urls.append((match_name, stat_title, url))
 
-# HTML upload form
+    return cloudinary_urls
+
+# HTML form
 @app.route('/')
 def home():
     return render_template_string("""
         <html><body>
-        <h1>Upload your DOCX file to generate images</h1>
+        <h1>Upload your DOCX file to generate match images</h1>
         <form action="/upload" method="POST" enctype="multipart/form-data">
-            <input type="file" name="docx_file">
+            <input type="file" name="docx_file" required>
             <input type="submit" value="Upload">
         </form>
         </body></html>
     """)
 
-# Upload and process file
+# Handle file upload and display Cloudinary URLs
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'docx_file' not in request.files:
@@ -219,14 +200,14 @@ def upload_file():
 
     matches = extract_matches_from_docx(file_path)
     match_data = parse_match_data("\n".join(matches[1:]))
-    template_image_path = '3.jpeg'
+    uploaded_urls = generate_images_and_upload(match_data)
 
-    generate_images_for_stats_with_template(match_data, template_image_path, OUTPUT_FOLDER)
-
-    zip_filename = str(uuid.uuid4())
-    zip_path = create_zip_from_images(OUTPUT_FOLDER, zip_filename)
-
-    return send_from_directory(directory=OUTPUT_FOLDER, path=f"{zip_filename}.zip", as_attachment=True)
+    # Render result
+    html_output = "<h2>Generated Image URLs:</h2><ul>"
+    for match_name, stat_title, url in uploaded_urls:
+        html_output += f"<li><strong>{match_name} - {stat_title}</strong>: <a href='{url}' target='_blank'>{url}</a></li>"
+    html_output += "</ul>"
+    return html_output
 
 # Run app
 if __name__ == "__main__":
